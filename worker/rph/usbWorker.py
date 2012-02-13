@@ -99,6 +99,7 @@ class usbWorker(object):
     while True:
       try:
         self.error = None
+        self.mhps = 0
         self.job = None
         self.checksuccess = False
         self.cancelled = False
@@ -130,6 +131,7 @@ class usbWorker(object):
       except Exception as e:
         self.miner.log(self.name + ": %s\n" % e, "rB")
         self.error = e
+        self.mhps = 0
         time.sleep(1)
 
   # poll USB MCU, ~1000 times per second, checking for nonce data,
@@ -154,7 +156,6 @@ class usbWorker(object):
           golden = a[0:4]
           golden = golden[::-1]
           golden = golden.tostring()
-          self.job.endtime = now
           self.job.sendresult(golden, self)
           delta = (now - self.job.starttime)
           self.mhps = struct.unpack("<I", golden)[0] / 1000000. / delta
