@@ -20,37 +20,28 @@
 
 
 
-####################################################################
-# FPGA Mining LLC X6500 FPGA Miner Board hotplug controller module #
-####################################################################
+##########################################################
+# Generic FTDI JTAG bitbanging hotplug controller module #
+##########################################################
 
 
 
+import usb
 import traceback
 from threading import Condition, Thread
 from core.baseworker import BaseWorker
-from .x6500worker import X6500Worker
+from .ftdijtagworker import FTDIJTAGWorker
 
 
 
 # Worker main class, referenced from __init__.py
-class X6500HotplugWorker(BaseWorker):
+class FTDIJTAGHotplugWorker(BaseWorker):
   
-  version = "fpgamining.x6500 hotplug manager v0.1.0beta"
-  default_name = "X6500 hotplug manager"
+  version = "theseven.ftdijtag hotplug manager v0.1.0beta"
+  default_name = "FTDIJTAG hotplug manager"
   can_autodetect = True
   settings = dict(BaseWorker.settings, **{
-    "useftd2xx": {
-      "title": "Driver",
-      "type": "enum",
-      "values": [
-        {"value": False, "title": "PyUSB"},
-        {"value": True, "title": "D2XX"},
-      ],
-      "position": 1100
-    },
     "takeover": {"title": "Reset board if it appears to be in use", "type": "boolean", "position": 1200},
-    "uploadfirmware": {"title": "Upload firmware", "type": "boolean", "position": 1300},
     "firmware": {"title": "Firmware file location", "type": "string", "position": 1400},
     "blacklist": {
       "title": "Board list type",
@@ -82,6 +73,7 @@ class X6500HotplugWorker(BaseWorker):
   
   @classmethod
   def autodetect(self, core):
+    return  #TODO: Remove modules/fpgamining tree and activate this once ztexmerge has been evicted
     try:
       found = False
       try:
@@ -94,7 +86,7 @@ class X6500HotplugWorker(BaseWorker):
                 manufacturer = handle.getString(dev.iManufacturer, 100).decode("latin1")
                 product = handle.getString(dev.iProduct, 100).decode("latin1")
                 serial = handle.getString(dev.iSerialNumber, 100).decode("latin1")
-                if (manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner"):
+                if (manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner") or (manufacturer == "BTCFPGA" and product == "ModMiner"):
                   try:
                     configuration = dev.configurations[0]
                     interface = configuration.interfaces[0][0]
@@ -108,57 +100,28 @@ class X6500HotplugWorker(BaseWorker):
               except: pass
           if found: break
       except: pass
-      if not found:
-        try:
-          import d2xx
-          devices = d2xx.listDevices()
-          for devicenum, serial in enumerate(devices):
-            try:
-              handle = d2xx.open(devicenum)
-              handle.close()
-              found = True
-              break
-            except: pass
-        except: pass
       if found: core.add_worker(self(core))
     except: pass
     
     
   # Constructor, gets passed a reference to the miner core and the saved worker state, if present
   def __init__(self, core, state = None):
-    # Check if pyusb is installed
-    self.pyusb_available = False
-    try:
-      import usb
-      self.pyusb_available = True
-    except: pass
-    self.d2xx_available = False
-    try:
-      import d2xx
-      self.d2xx_available = True
-    except: pass
-
     # Initialize bus scanner wakeup event
     self.wakeup = Condition()
 
     # Let our superclass do some basic initialization and restore the state if neccessary
-    super(X6500HotplugWorker, self).__init__(core, state)
+    super(FTDIJTAGHotplugWorker, self).__init__(core, state)
 
     
   # Validate settings, filling them with default values if neccessary.
   # Called from the constructor and after every settings change.
   def apply_settings(self):
     # Let our superclass handle everything that isn't specific to this worker module
-    super(X6500HotplugWorker, self).apply_settings()
+    super(FTDIJTAGHotplugWorker, self).apply_settings()
     if not "serial" in self.settings: self.settings.serial = None
-    if not "useftd2xx" in self.settings:
-      self.settings.useftd2xx = self.d2xx_available and not self.pyusb_available
-    if self.settings.useftd2xx == "false": self.settings.useftd2xx = False
-    else: self.settings.useftd2xx = not not self.settings.useftd2xx
-    if not "takeover" in self.settings: self.settings.takeover = self.pyusb_available
-    if not "uploadfirmware" in self.settings: self.settings.uploadfirmware = True
+    if not "takeover" in self.settings: self.settings.takeover = True
     if not "firmware" in self.settings or not self.settings.firmware:
-      self.settings.firmware = "modules/fpgamining/x6500/firmware/x6500.bit"
+      self.settings.firmware = "modules/theseven/ftdijtag/firmware/"
     if not "blacklist" in self.settings: self.settings.blacklist = True
     if self.settings.blacklist == "false": self.settings.blacklist = False
     else: self.settings.blacklist = not not self.settings.blacklist
@@ -180,11 +143,8 @@ class X6500HotplugWorker(BaseWorker):
     if not "jobinterval" in self.settings or not self.settings.jobinterval: self.settings.jobinterval = 60
     if not "pollinterval" in self.settings or not self.settings.pollinterval: self.settings.pollinterval = 0.1
     if not "scaninterval" in self.settings or not self.settings.scaninterval: self.settings.scaninterval = 10
-    # We can't switch the driver on the fly, so trigger a restart if it changed.
-    # self.useftd2xx is a cached copy of self.settings.useftd2xx
-    if self.started and self.settings.useftd2xx != self.useftd2xx: self.async_restart()
     # Push our settings down to our children
-    fields = ["takeover", "uploadfirmware", "firmware", "initialspeed", "maximumspeed", "tempwarning", "tempcritical",
+    fields = ["takeover", "firmware", "initialspeed", "maximumspeed", "tempwarning", "tempcritical",
               "invalidwarning", "invalidcritical", "speedupthreshold", "jobinterval", "pollinterval"]
     for child in self.children:
       for field in fields: child.settings[field] = self.settings[field]
@@ -196,18 +156,13 @@ class X6500HotplugWorker(BaseWorker):
   # Reset our state. Called both from the constructor and from self.start().
   def _reset(self):
     # Let our superclass handle everything that isn't specific to this worker module
-    super(X6500HotplugWorker, self)._reset()
-    # These need to be set here in order to make the equality check in apply_settings() happy,
-    # when it is run before starting the module for the first time. (It is called from the constructor.)
-    self.useftd2xx = None
+    super(FTDIJTAGHotplugWorker, self)._reset()
 
 
   # Start up the worker module. This is protected against multiple calls and concurrency by a wrapper.
   def _start(self):
     # Let our superclass handle everything that isn't specific to this worker module
-    super(X6500HotplugWorker, self)._start()
-    # Cache the driver, as we don't like that to change on the fly
-    self.useftd2xx = self.settings.useftd2xx
+    super(FTDIJTAGHotplugWorker, self)._start()
     # Initialize child map
     self.childmap = {}
     # Reset the shutdown flag for our threads
@@ -221,7 +176,7 @@ class X6500HotplugWorker(BaseWorker):
   # Shut down the worker module. This is protected against multiple calls and concurrency by a wrapper.
   def _stop(self):
     # Let our superclass handle everything that isn't specific to this worker module
-    super(X6500HotplugWorker, self)._stop()
+    super(FTDIJTAGHotplugWorker, self)._stop()
     # Set the shutdown flag for our threads, making them terminate ASAP.
     self.shutdown = True
     # Trigger the main thread's wakeup flag, to make it actually look at the shutdown flag.
@@ -243,42 +198,33 @@ class X6500HotplugWorker(BaseWorker):
   def main(self):
     # Loop until we are shut down
     while not self.shutdown:
-    
-      if self.useftd2xx: import d2xx
-      if not self.useftd2xx or self.settings.takeover: import usb
-
       try:
         boards = {}
-        if self.useftd2xx:
-          devices = d2xx.listDevices()
-          for devicenum, serial in enumerate(devices):
-            try:
-              handle = d2xx.open(devicenum)
-              handle.close()
-              available = True
-            except: availabale = False
-            boards[serial] = available
-        else:
-          for bus in usb.busses():
-            for dev in bus.devices:
-              if dev.idVendor == 0x0403 and dev.idProduct == 0x6001:
-                try:
-                  handle = dev.open()
-                  manufacturer = handle.getString(dev.iManufacturer, 100).decode("latin1")
-                  product = handle.getString(dev.iProduct, 100).decode("latin1")
-                  serial = handle.getString(dev.iSerialNumber, 100).decode("latin1")
-                  if (manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner"):
-                    try:
-                      configuration = dev.configurations[0]
-                      interface = configuration.interfaces[0][0]
-                      handle.setConfiguration(configuration.value)
-                      handle.claimInterface(interface.interfaceNumber)
-                      handle.releaseInterface()
-                      handle.setConfiguration(0)
-                      available = True
-                    except: available = False
-                    boards[serial] = available
-                except: pass
+        for bus in usb.busses():
+          for dev in bus.devices:
+            if dev.idVendor == 0x0403 and dev.idProduct == 0x6001:
+              try:
+                handle = dev.open()
+                manufacturer = handle.getString(dev.iManufacturer, 100).decode("latin1")
+                product = handle.getString(dev.iProduct, 100).decode("latin1")
+                serial = handle.getString(dev.iSerialNumber, 100).decode("latin1")
+                boardtype = None
+                if (manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner"):
+                  boardtype = "X6500"
+                elif manufacturer == "BTCFPGA" and product == "ModMiner":
+                  boardtype = "ModMiner"
+                if boardtype:
+                  try:
+                    configuration = dev.configurations[0]
+                    interface = configuration.interfaces[0][0]
+                    handle.setConfiguration(configuration.value)
+                    handle.claimInterface(interface.interfaceNumber)
+                    handle.releaseInterface()
+                    handle.setConfiguration(0)
+                    available = True
+                  except: available = False
+                  boards[serial] = (available, boardtype)
+              except: pass
                 
         for serial in boards.keys():
           if self.settings.blacklist:
@@ -305,8 +251,8 @@ class X6500HotplugWorker(BaseWorker):
           del self.childmap[serial]
           try: self.children.remove(child)
           except: pass
-              
-        for serial, available in boards.items():
+                
+        for serial, (available, boardtype) in boards.items():
           if serial in self.childmap: continue
           if not available and self.settings.takeover:
             try:
@@ -319,7 +265,7 @@ class X6500HotplugWorker(BaseWorker):
                     manufacturer = handle.getString(dev.iManufacturer, 100).decode("latin1")
                     product = handle.getString(dev.iProduct, 100).decode("latin1")
                     _serial = handle.getString(dev.iSerialNumber, 100).decode("latin1")
-                    if ((manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner")) and _serial == serial:
+                    if ((manufacturer == "FTDI" and product == "FT232R USB UART") or (manufacturer == "FPGA Mining LLC" and product == "X6500 FPGA Miner") or (manufacturer == "BTCFPGA" and product == "ModMiner")) and _serial == serial:
                       handle.reset()
                       time.sleep(1)
                       configuration = dev.configurations[0]
@@ -333,11 +279,11 @@ class X6500HotplugWorker(BaseWorker):
                       available = True
             except: pass
           if available:
-            child = X6500Worker(self.core)
-            child.settings.name = "X6500 board " + serial
+            child = FTDIJTAGWorker(self.core)
+            child.settings.name = boardtype + " board " + serial
             child.settings.serial = serial
-            fields = ["takeover", "useftd2xx", "uploadfirmware", "firmware", "initialspeed", "maximumspeed", "tempwarning",
-                      "tempcritical", "invalidwarning", "invalidcritical", "speedupthreshold", "jobinterval", "pollinterval"]
+            fields = ["takeover", "firmware", "initialspeed", "maximumspeed", "tempwarning", "tempcritical",
+                      "invalidwarning", "invalidcritical", "speedupthreshold", "jobinterval", "pollinterval"]
             for field in fields: child.settings[field] = self.settings[field]
             child.apply_settings()
             self.childmap[serial] = child

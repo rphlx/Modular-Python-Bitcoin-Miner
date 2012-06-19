@@ -70,7 +70,7 @@ class SimpleRS232Worker(BaseWorker):
     if not "jobinterval" in self.settings or not self.settings.jobinterval: self.settings.jobinterval = 60
     # We can't change the port name or baud rate on the fly, so trigger a restart if they changed.
     # self.port/self.baudrate are cached copys of self.settings.port/self.settings.baudrate
-    if self.settings.port != self.port or self.settings.baudrate != self.baudrate: self.async_restart()
+    if self.started and self.settings.port != self.port or self.settings.baudrate != self.baudrate: self.async_restart()
     
 
   # Reset our state. Called both from the constructor and from self.start().
@@ -123,11 +123,12 @@ class SimpleRS232Worker(BaseWorker):
 
       
   # This function should interrupt processing of the specified job if possible.
-  # This is neccesary to avoid producing stale shares after a new block was found,
+  # This is necesary to avoid producing stale shares after a new block was found,
   # or if a job expires for some other reason. If we don't know about the job, just ignore it.
   # Never attempts to fetch a new job in here, always do that asynchronously!
-  # This needs to be very lightweight and fast.
-  def notify_canceled(self, job):
+  # This needs to be very lightweight and fast. We don't care whether it's a
+  # graceful cancellation for this module because the work upload overhead is low. 
+  def notify_canceled(self, job, graceful):
     # Acquire the wakeup lock to make sure that nobody modifies job/nextjob while we're looking at them.
     with self.wakeup:
       # If the currently being processed, or currently being uploaded job are affected,
@@ -220,14 +221,14 @@ class SimpleRS232Worker(BaseWorker):
         # This usually means that the wakeup timeout has expired.
         if not self.checksuccess: raise Exception("Timeout waiting for validation job to finish")
         # self.stats.mhps has now been populated by the listener thread
-        self.core.log(self.settings.name + ": Running at %f MH/s\n" % self.stats.mhps, 300, "B")
+        self.core.log(self, "Running at %f MH/s\n" % self.stats.mhps, 300, "B")
         # Calculate the time that the device will need to process 2**32 nonces.
         # This is limited at 60 seconds in order to have some regular communication,
         # even with very slow devices (and e.g. detect if the device was unplugged).
         interval = min(60, 2**32 / 1000000. / self.stats.mhps)
         # Add some safety margin and take user's interval setting (if present) into account.
         self.jobinterval = min(self.settings.jobinterval, max(0.5, interval * 0.8 - 1))
-        self.core.log(self.settings.name + ": Job interval: %f seconds\n" % self.jobinterval, 400, "B")
+        self.core.log(self, "Job interval: %f seconds\n" % self.jobinterval, 400, "B")
         # Tell the MPBM core that our hash rate has changed, so that it can adjust its work buffer.
         self.jobspersecond = 1. / self.jobinterval
         self.core.notify_speed_changed(self)
@@ -275,7 +276,7 @@ class SimpleRS232Worker(BaseWorker):
       # If something went wrong...
       except Exception as e:
         # ...complain about it!
-        self.core.log(self.settings.name + ": %s\n" % traceback.format_exc(), 100, "rB")
+        self.core.log(self, "%s\n" % traceback.format_exc(), 100, "rB")
         # Make sure that the listener thread realizes that something went wrong
         self.error = e
       finally:
@@ -361,6 +362,7 @@ class SimpleRS232Worker(BaseWorker):
             # Calculate the hash rate based on the processing time and number of neccessary MHashes.
             # This assumes that the device processes all nonces (starting at zero) sequentially.
             self.stats.mhps = nonceval / delta / 1000000.
+            self.core.event(350, self, "speed", self.stats.mhps * 1000, "%f MH/s" % self.stats.mhps, worker = self)
           # This needs self.mhps to be set.
           if isinstance(self.job, ValidationJob):
             # This is a validation job. Validate that the nonce is correct, and complain if not.
@@ -375,7 +377,7 @@ class SimpleRS232Worker(BaseWorker):
 
         if result == 3:
           # The device managed to process the whole 2**32 keyspace before we sent it new work.
-          self.core.log(self.settings.name + " exhausted keyspace!\n", 200, "y")
+          self.core.log(self, "Exhausted keyspace!\n", 200, "y")
           # If it was a validation job, this probably means that there is a hardware/firmware bug
           # or that the "found share" message was lost on the communication channel.
           if isinstance(self.job, ValidationJob): raise Exception("Validation job terminated without finding a share")
@@ -392,7 +394,7 @@ class SimpleRS232Worker(BaseWorker):
     # If an exception is thrown in the listener thread...
     except Exception as e:
       # ...complain about it...
-      self.core.log(self.settings.name + ": %s\n" % traceback.format_exc(), 100, "rB")
+      self.core.log(self, "%s\n" % traceback.format_exc(), 100, "rB")
       # ...put it into the exception container...
       self.error = e
       # ...wake up the main thread...

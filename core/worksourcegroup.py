@@ -91,10 +91,10 @@ class WorkSourceGroup(BaseWorkSource):
         if not worksource in self.children:
           if self.started:
             try:
-              self.core.log("%s: Starting up work source %s...\n" % (self.settings.name, worksource.settings.name), 800)
+              self.core.log(self, "Starting up work source %s...\n" % (worksource.settings.name), 800)
               worksource.start()
             except Exception as e:
-              self.core.log("Core: Could not start work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
+              self.core.log(self, "Could not start work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
           self.children.append(worksource)
 
     
@@ -105,10 +105,10 @@ class WorkSourceGroup(BaseWorkSource):
           worksource.set_parent()
           if self.started:
             try:
-              self.core.log("%s: Shutting down work source %s...\n" % (self.settings.name, worksource.settings.name), 800)
+              self.core.log(self, "Shutting down work source %s...\n" % (worksource.settings.name), 800)
               worksource.stop()
             except Exception as e:
-              self.core.log("Core: Could not stop work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
+              self.core.log(self, "Could not stop work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
           self.children.remove(worksource)
         
         
@@ -117,20 +117,20 @@ class WorkSourceGroup(BaseWorkSource):
     with self.childlock:
       for worksource in self.children:
         try:
-          self.core.log("%s: Starting up work source %s...\n" % (self.settings.name, worksource.settings.name), 800)
+          self.core.log(self, "Starting up work source %s...\n" % (worksource.settings.name), 800)
           worksource.start()
         except Exception as e:
-          self.core.log("Core: Could not start work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
+          self.core.log(self, "Could not start work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
   
   
   def _stop(self):
     with self.childlock:
       for worksource in self.children:
         try:
-          self.core.log("%s: Shutting down work source %s...\n" % (self.settings.name, worksource.settings.name), 800)
+          self.core.log(self, "Shutting down work source %s...\n" % (worksource.settings.name), 800)
           worksource.stop()
         except Exception as e:
-          self.core.log("Core: Could not stop work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
+          self.core.log(self, "Could not stop work source %s: %s\n" % (worksource.settings.name, traceback.format_exc()), 100, "yB")
     super(WorkSourceGroup, self)._stop()
       
       
@@ -166,11 +166,13 @@ class WorkSourceGroup(BaseWorkSource):
       return self.last_index
       
       
-  def _get_job_round(self, force = False):
+  def _start_fetcher(self, force = False):
     with self.childlock:
       children = [child for child in self.children]
       startindex = self._get_start_index()
+    best = False
     found = False
+    iteration = 0
     while not found:
       index = startindex
       first = True
@@ -179,28 +181,35 @@ class WorkSourceGroup(BaseWorkSource):
         mhashes = 0
         if not worksource.is_group: mhashes = 2**32 / 1000000.
         if force or worksource.mhashes_pending >= mhashes:
-          if mhashes: worksource.add_pending_mhashes(-mhashes)
-          job = worksource.get_job()
-          if job:
-            if mhashes: worksource.add_pending_mhashes(mhashes)
-            return job
-          self.add_pending_mhashes(mhashes)
           found = True
+          if mhashes: worksource.add_pending_mhashes(-mhashes)
+          result = worksource.start_fetchers(1)
+          if result is not False:
+            if mhashes: worksource.add_pending_mhashes(mhashes)
+            if result: return result
+            best = result
         index += 1
         if index >= len(children): index = 0
         first = False
       if not found: self._distribute_mhashes()
-    return []
+      iteration += 1
+      if iteration > 150: break
+      if iteration > 100: force = True
+    return best
+    
+    
+  def get_running_fetcher_count(self):
+    return sum(child.get_running_fetcher_count() for child in self.children)
 
     
-  def get_job(self):
-    if not self.started or not self.settings.enabled or not self.children: return []
-    job = self._get_job_round()
-    if job: return job
-    job = self._get_job_round(True)
-    if job: return job
-    if self.parent:
-      mhashes = 2**32 / 1000000.
-      self.add_pending_mhashes(-mhashes)
-      self.parent.add_pending_mhashes(mhashes)
-    return []
+  def start_fetchers(self, count):
+    if not self.started or not self.settings.enabled or not self.children or not count: return False
+    started = 0
+    result = False
+    while started < count:
+      result = self._start_fetcher()
+      if not result: result = self._start_fetcher(True)
+      if not result: break
+      started += result
+    if started: return started
+    return result
