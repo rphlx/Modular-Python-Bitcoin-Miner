@@ -141,11 +141,8 @@ class rphUSBBoardProxy(Process):
     try:
       lastshares = []
       counter = 0
-      
+
       while not self.shutdown:
-      
-        counter += 1
-      
         # Poll for nonces
         now = time.time()
         nonces = self.device.read_nonces()
@@ -160,6 +157,13 @@ class rphUSBBoardProxy(Process):
            if self.job: self.send("nonce_found", time.time(), struct.pack("<I", nonce[0]))
            lastshares.append(nonce[0])
            while len(lastshares) > len(nonces): lastshares.pop(0)
+
+        counter += 1
+        if counter >= 10:
+          counter = 0
+          # Read temperatures
+          temp = self.device.read_temps()
+          self.send("temperature_read", temp)
 
         with self.wakeup: self.wakeup.wait(self.pollinterval)
         

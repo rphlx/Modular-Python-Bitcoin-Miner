@@ -93,6 +93,7 @@ class rphUSBWorker(BaseWorker):
     self.pollinterval = None
     self.stats.mhps = 0
     self.stats.errorrate = 0
+    self.stats.temperature = None
 
 
   # Start up the worker module. This is protected against multiple calls and concurrency by a wrapper.
@@ -129,6 +130,7 @@ class rphUSBWorker(BaseWorker):
     # Let our superclass handle everything that isn't specific to this worker module
     super(rphUSBWorker, self)._get_statistics(stats, childstats)
     stats.errorrate = self.stats.errorrate
+    stats.temperature = self.stats.temperature
 
 
   # Main thread entry point
@@ -176,6 +178,7 @@ class rphUSBWorker(BaseWorker):
           elif data[0] == "speed_changed": self._notify_speed_changed(*data[1:])
           elif data[0] == "error_rate": self._notify_error_rate(*data[1:])
           elif data[0] == "keyspace_exhausted": self._notify_keyspace_exhausted(*data[1:])
+          elif data[0] == "temperature_read": self._notify_temperature_read(*data[1:])
           else: raise Exception("Proxy sent unknown message: %s" % str(data))
         
         
@@ -274,6 +277,11 @@ class rphUSBWorker(BaseWorker):
   def _notify_keyspace_exhausted(self):
     with self.workloopwakeup: self.workloopwakeup.notify()
     self.core.log(self, "Exhausted keyspace!\n", 200, "y")
+
+
+  def _notify_temperature_read(self, temp):
+    self.stats.temperature = temp
+    self.core.event(350, self, "temperature", temp * 1000, "%f \xc2\xb0C" % temp, worker = self)
 
       
   def _send_job(self, job):

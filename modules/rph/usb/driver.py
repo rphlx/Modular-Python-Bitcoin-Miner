@@ -112,4 +112,20 @@ class rphUSBDevice(object):
 #      values = struct.unpack("<III", data[12 * i : 12 * (i + 1)])
 #      nonces.append((values[0] - self.nonce_offset, values[1] - self.nonce_offset, values[2]))
     return nonces
-      
+
+  def read_temps(self):
+    with self.lock:
+      rawtemp = ''
+      try:
+        self.handle.controlMsg(0x40, 0xe8, None, 0, 0, 100)
+        time.sleep(0.05)
+        rawtemp = self.handle.controlMsg(0xc0, 0xea, 2, 0, 0, 100)
+      except:
+        pass
+      if len(rawtemp) == 2:
+        temp = rawtemp[0] * 256 + rawtemp[1]
+        temp = 128.0 * temp / 32768.0
+        return (temp)
+      else:
+        return (0.0)
+
